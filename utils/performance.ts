@@ -15,11 +15,12 @@ function endStats(message: string) {
   printLog(`${message} ${duration.toFixed(2)}ms`);
 }
 
-export function printPerf(action: Function, operationName: string) {
+export async function printPerf(action: Function, operationName: string) {
   try {
     startStats();
-    action();
+    const result = await action();
     endStats(operationName);
+    return result;
   } catch (err) {
     printError(err as string);
   }

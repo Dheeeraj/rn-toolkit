@@ -7,11 +7,21 @@ import {
   showHelp,
   checkForRn,
 } from "./utils";
+import { UpdateVerbose, printVerbose } from "./utils/print";
 
 function main() {
-  if (!checkForRn()) return;
+  // UpdateVerbose(true);
+  // Check if the current directory is a React Native project
+  printVerbose("Checking if the current directory is a React Native project");
+  if (!checkForRn()) {
+    printVerbose("The current directory is not a React Native project");
+    return;
+  }
+
+  // Get the command and platform from the arguments
   const args = Bun.argv.slice(2); // Ignoring the first two elements
 
+  // Initialize the command and platform variables
   let argumentIndex = 0;
   const command = args[argumentIndex];
   argumentIndex++;
@@ -20,19 +30,20 @@ function main() {
     argumentIndex++;
   }
 
-  // The newName is relevant only for the rename command
-  const newName = command === "rename" && args.length > 2 ? args[1] : "";
-
   // Switch to identify the command and execute the corresponding function
   switch (command) {
     case "clean":
+      printVerbose("Cleaning the project");
       clean(platform, args[argumentIndex]);
       break;
     case "rename":
+      printVerbose("Renaming the project");
+      const newName = command === "rename" && args.length > 2 ? args[1] : "";
       rename(platform, newName);
       break;
     case "help":
     default:
+      printVerbose("Showing help");
       showHelp();
   }
 }

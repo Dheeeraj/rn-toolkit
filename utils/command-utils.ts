@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import type { CommandPlatformType } from "./types";
 import { existsSync, readFileSync } from "fs";
+import { printVerbose } from "./print";
 
 const packageJsonPath = "./package.json";
 
@@ -31,6 +32,7 @@ export function checkForRn(): boolean {
       (packageJson["devDependencies"] &&
         packageJson["devDependencies"]["react-native"])
     ) {
+      printVerbose("The current directory is a React Native project");
       return true;
     }
 
@@ -51,6 +53,7 @@ export function checkForRn(): boolean {
 }
 
 export function showHelp(): void {
+  printVerbose("Showing help");
   console.log(`
   Available commands:
     clean      Clean project

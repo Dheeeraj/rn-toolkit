@@ -2,11 +2,12 @@ import { existsSync, rmSync, unlinkSync } from "fs";
 import { execSync, spawnSync, type SpawnSyncOptions } from "child_process";
 import os from "os";
 import { join } from "path";
-import { execa } from "execa";
+import { execa, ExecaError } from "execa";
 import type { CleanArgsType } from "./types";
 import { printPerf } from "./performance";
-import { printError } from "./print";
-
+import { printCmdError, printError, printVerbose } from "./print";
+import { CleanAndroid } from "./clean/android-clean";
+import { CleanIOS } from "./clean/ios-clean";
 const appRoot = process.cwd();
 
 const lockFileAndCacheClearCmd = [
@@ -16,28 +17,39 @@ const lockFileAndCacheClearCmd = [
   { file: "bun.lockb", command: ["bun", "cache", "clean"] },
 ];
 
-export function clean(platform: CleanArgsType, nextArg: string): void {
-  const isClearAll = platform === "all" && typeof nextArg === "undefined";
-  if ((nextArg && nextArg === "cache") || isClearAll) {
-    ClearRnCache();
-  }
-  if (platform === "android" || isClearAll) {
-  }
-  if (platform === "ios" || isClearAll) {
-  }
+export async function clean(
+  platform: CleanArgsType,
+  nextArg: string
+): Promise<void> {
+  await printPerf(async () => {
+    const isClearAll = platform === "all" && typeof nextArg === "undefined";
+    if (platform === "android" || isClearAll) {
+      await CleanAndroid();
+    }
+    if (platform === "ios" || isClearAll) {
+      await CleanIOS();
+    }
+    if ((nextArg && nextArg === "cache") || isClearAll) {
+      await ClearRnCache();
+    }
+  }, "Completed Cleaning");
 }
 
 function ClearNodeModulus() {
+  printVerbose("Cleaning node_modules");
   const nodeModulesPath = "./node_modules";
   if (existsSync(nodeModulesPath)) {
+    printVerbose("Deleting node_modules");
     // Delete the node_modules directory recursively
     if (os.platform() === "win32") {
+      printVerbose("Deleting node_modules on Windows");
       rmSync(nodeModulesPath, { recursive: true, force: true });
     } else {
+      printVerbose("Deleting node_modules on Unix");
       execSync("rm -rf ./node_modules");
     }
   } else {
-    throw new Error("The node_modules directory does not exist.");
+    printError("The node_modules directory does not exist.");
   }
 }
 
@@ -65,45 +77,123 @@ function CleanLockFiles() {
         const result = spawnSync(executable, args, childProcessOptions);
 
         if (result.status === 0) {
-          console.log(`${executable} cache cleaned successfully.`);
+          printVerbose(`${executable} cache cleaned successfully.`);
         } else {
-          console.error(`Error cleaning ${executable} cache.`, result.error);
+          printVerbose(`Error cleaning ${executable} cache.`);
+          printError(result.error as unknown as string);
         }
       }, `${executable} cache clean executed`);
 
       // Wrap file deletion in printPerf
       printPerf(() => {
         unlinkSync(filePath);
-      }, `${file} removed`);
+      }, `${file} deleted`);
     }
   });
+}
+
+// TODO: Can be added later if needed
+async function ForceKillWatchMan() {
+  try {
+    await execa(os.platform() === "win32" ? "tskill" : "dhee", ["watchman"], {
+      cwd: appRoot,
+    });
+  } catch (killError) {
+    printCmdError(killError as ExecaError);
+  }
 }
 
 async function CleanWatchMan() {
   try {
     await printPerf(async () => {
-      await execa(
-        os.platform() === "win32" ? "tskill" : "killall",
-        ["watchman"],
-        { cwd: appRoot }
-      );
-    }, "Stop Watchman");
-    await printPerf(async () => {
-      await execa("watchman", ["watch-del-all"], { cwd: appRoot });
-
-      const watchmanStateDir = join(os.homedir(), ".watchman");
-      if (existsSync(watchmanStateDir)) {
-        rmSync(watchmanStateDir, { recursive: true, force: true });
+      try {
+        // First try graceful shutdown
+        printVerbose("Shutting down Watchman");
+        const result = await execa("watchman", ["shutdown-server"], {
+          cwd: appRoot,
+        });
+        printVerbose(`Watchman shutdown in ${result.durationMs}ms`);
+      } catch (error) {
+        printVerbose("Failed to shutdown Watchman");
+        printCmdError(error as ExecaError);
       }
-    }, "Delete Watchman cache");
+    }, "Stopping Watchman");
+
+    await printPerf(async () => {
+      // Use watch-del with the current directory path instead of watch-del-all
+      printVerbose("Deleting Watchman cache of current project");
+      const result = await execa("watchman", ["watch-del", appRoot], {
+        cwd: appRoot,
+      });
+      printVerbose(`Watchman cache deleted in ${result.durationMs}ms`);
+
+      // Only delete the watchman state for the current project
+      const watchmanStateDir = join(os.homedir(), ".watchman");
+      const projectWatchmanState = join(watchmanStateDir, "state");
+      if (existsSync(projectWatchmanState)) {
+        printVerbose("Deleting Watchman state for current project");
+        rmSync(projectWatchmanState, { recursive: true, force: true });
+      }
+    }, "Watchman cache deleted");
   } catch (error) {
+    printVerbose("Failed to clean Watchman");
     printError(error as string);
   }
 }
 
+async function CleanMetroCache() {
+  await printPerf(async () => {
+    const tempDir = os.tmpdir();
+    const platform = os.platform();
+
+    // Clean Haste map cache
+    printVerbose("Cleaning Haste map cache");
+    const hastePattern =
+      platform === "win32"
+        ? join(tempDir, "haste-map-*")
+        : join(tempDir, "haste-map-*");
+
+    try {
+      if (platform === "win32") {
+        await execa("cmd", ["/c", `del /Q "${hastePattern}"`]);
+      } else {
+        await execa("rm", ["-f", hastePattern]);
+      }
+      printVerbose("Haste map cache cleaned");
+    } catch (error) {
+      // Ignore errors if no files found
+      printVerbose("No Haste map cache found or already cleaned");
+    }
+
+    // Clean Metro cache
+    printVerbose("Cleaning Metro cache");
+    const metroCachePath = join(tempDir, "metro-cache");
+
+    try {
+      if (existsSync(metroCachePath)) {
+        if (platform === "win32") {
+          await execa("cmd", ["/c", `rmdir /S /Q "${metroCachePath}"`]);
+        } else {
+          await execa("rm", ["-rf", metroCachePath]);
+        }
+        printVerbose("Metro cache cleaned");
+      } else {
+        printVerbose("No Metro cache found");
+      }
+    } catch (error) {
+      printCmdError(error as ExecaError);
+    }
+  }, "Metro and Haste cache cleaned");
+}
+
 async function ClearRnCache() {
-  console.log(os.tmpdir(), "temp");
-  // printPerf(ClearNodeModulus, "node_modules removed");
-  // CleanLockFiles();
-  // await CleanWatchMan();
+  printPerf(ClearNodeModulus, "node_modules deleted");
+
+  CleanLockFiles();
+
+  await CleanWatchMan();
+
+  await CleanMetroCache();
+
+  printVerbose("Done");
 }
