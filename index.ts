@@ -25,8 +25,8 @@ function main() {
   let argumentIndex = 0;
   const command = args[argumentIndex];
   argumentIndex++;
-  const platform = determinePlatform(args[argumentIndex]);
-  if (platform !== "all") {
+  const platformResponse = determinePlatform(args[argumentIndex]);
+  if (platformResponse.skipToNextArg) {
     argumentIndex++;
   }
 
@@ -34,12 +34,11 @@ function main() {
   switch (command) {
     case "clean":
       printVerbose("Cleaning the project");
-      clean(platform, args[argumentIndex]);
+      clean(platformResponse.platform);
       break;
     case "rename":
       printVerbose("Renaming the project");
-      const newName = command === "rename" && args.length > 2 ? args[1] : "";
-      rename(platform, newName);
+      rename(platformResponse.platform, args.slice(argumentIndex));
       break;
     case "help":
     default:

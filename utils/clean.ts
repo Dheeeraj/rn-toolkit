@@ -17,19 +17,16 @@ const lockFileAndCacheClearCmd = [
   { file: "bun.lockb", command: ["bun", "cache", "clean"] },
 ];
 
-export async function clean(
-  platform: CleanArgsType,
-  nextArg: string
-): Promise<void> {
-  await printPerf(async () => {
-    const isClearAll = platform === "all" && typeof nextArg === "undefined";
+export async function clean(platform: CleanArgsType): Promise<void> {
+  return await printPerf(async () => {
+    const isClearAll = platform === "all";
     if (platform === "android" || isClearAll) {
       await CleanAndroid();
     }
     if (platform === "ios" || isClearAll) {
       await CleanIOS();
     }
-    if ((nextArg && nextArg === "cache") || isClearAll) {
+    if (platform === "cache" || isClearAll) {
       await ClearRnCache();
     }
   }, "Completed Cleaning");
