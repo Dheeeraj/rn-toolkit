@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "chalk": "^5.4.1",
-    "execa": "^9.5.3"
+    "execa": "^9.5.3",
+    "ignore": "^7.0.4"
   },
   "bin": {
     "rn-toolkit": "./index.ts"

@@ -1,13 +1,12 @@
 import { join } from "path";
+import ignore from "ignore";
 import {
   existsSync,
   readFileSync,
   writeFileSync,
   mkdirSync,
   readdirSync,
-  unlinkSync,
   rmdirSync,
-  statSync,
   renameSync,
 } from "fs";
 import { printError, printLog, printVerbose } from "../print";
@@ -23,6 +22,10 @@ interface BundleConfig {
 interface ReplacementResult {
   content: string;
   replacements: number;
+}
+
+interface FileUpdateConfig {
+  filePath: string;
 }
 
 function replaceBundleName(
@@ -61,50 +64,34 @@ function createBundleConfig(
   };
 }
 
-async function updateBuildGradle(config: BundleConfig): Promise<void> {
-  const buildGradlePath = join(process.cwd(), "android", "app", "build.gradle");
-  const content = readFileSync(buildGradlePath, "utf8");
+async function updateFiles(
+  config: BundleConfig,
+  files: FileUpdateConfig[]
+): Promise<void> {
+  for (const file of files) {
+    const fullPath = join(process.cwd(), file.filePath);
+    const fileName = file.filePath.split("/").pop() || file.filePath;
 
-  const { content: newContent, replacements } = replaceBundleName(
-    content,
-    config.oldBundle,
-    config.newBundle
-  );
+    if (!existsSync(fullPath)) {
+      printError(`${fileName} not found`);
+      continue;
+    }
 
-  if (replacements > 0) {
-    writeFileSync(buildGradlePath, newContent, "utf8");
-    printLog(
-      `Updated ${replacements} instances in build.gradle from ${config.oldBundle} -> ${config.newBundle}`
+    const content = readFileSync(fullPath, "utf8");
+    const { content: newContent, replacements } = replaceBundleName(
+      content,
+      config.oldBundle,
+      config.newBundle
     );
-  } else {
-    printError("No instances found to replace in build.gradle");
-  }
-}
 
-async function updateAndroidManifest(config: BundleConfig): Promise<void> {
-  const manifestPath = join(
-    process.cwd(),
-    "android",
-    "app",
-    "src",
-    "main",
-    "AndroidManifest.xml"
-  );
-  const content = readFileSync(manifestPath, "utf8");
-
-  const { content: newContent, replacements } = replaceBundleName(
-    content,
-    config.oldBundle,
-    config.newBundle
-  );
-
-  if (replacements > 0) {
-    writeFileSync(manifestPath, newContent, "utf8");
-    printLog(
-      `Updated ${replacements} instances in AndroidManifest.xml from ${config.oldBundle} -> ${config.newBundle}`
-    );
-  } else {
-    printLog("No instances found to replace in AndroidManifest.xml");
+    if (replacements > 0) {
+      writeFileSync(fullPath, newContent, "utf8");
+      printLog(
+        `Updated ${replacements} instances in ${fileName} from ${config.oldBundle} -> ${config.newBundle}`
+      );
+    } else {
+      printVerbose(`No instances found to replace in ${fileName}`);
+    }
   }
 }
 
@@ -224,6 +211,199 @@ async function moveAndUpdateJavaFiles(config: BundleConfig): Promise<void> {
   }
 }
 
+function parseGitignore(dir: string): ignore.Ignore {
+  const ig = ignore();
+  const gitignorePath = join(dir, ".gitignore");
+
+  if (existsSync(gitignorePath)) {
+    const content = readFileSync(gitignorePath, "utf8");
+    ig.add(content);
+  }
+
+  return ig;
+}
+
+function shouldIgnoreFile(filePath: string, ig: ignore.Ignore): boolean {
+  const relativePath = filePath.replace(process.cwd(), "").replace(/^\//, "");
+  const shouldIgnore = ig.ignores(relativePath);
+
+  if (shouldIgnore) {
+    printVerbose(`File ${relativePath} matches gitignore pattern`);
+  }
+
+  return shouldIgnore;
+}
+
+async function updateAllFilesInAndroid(config: BundleConfig): Promise<void> {
+  const androidDir = join(process.cwd(), "android");
+  const newBundlePath = join(
+    androidDir,
+    "app",
+    "src",
+    "main",
+    "java",
+    config.newPath
+  );
+  const ig = parseGitignore(process.cwd());
+
+  async function processDirectory(dir: string): Promise<number> {
+    let totalReplacements = 0;
+    const entries = readdirSync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+
+      // Skip the new bundle path directory
+      if (fullPath === newBundlePath) {
+        printVerbose(`Skipping new bundle path: ${fullPath}`);
+        continue;
+      }
+
+      // Skip files that match gitignore patterns
+      if (shouldIgnoreFile(fullPath, ig)) {
+        printVerbose(`Skipping gitignored file: ${fullPath}`);
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        totalReplacements += await processDirectory(fullPath);
+      } else {
+        // Skip binary files and other non-text files
+        if (
+          entry.name.endsWith(".class") ||
+          entry.name.endsWith(".dex") ||
+          entry.name.endsWith(".apk") ||
+          entry.name.endsWith(".aab") ||
+          entry.name.endsWith(".so") ||
+          entry.name.endsWith(".aar")
+        ) {
+          continue;
+        }
+
+        try {
+          const content = readFileSync(fullPath, "utf8");
+          const { content: newContent, replacements } = replaceBundleName(
+            content,
+            config.oldBundle,
+            config.newBundle
+          );
+
+          if (replacements > 0) {
+            writeFileSync(fullPath, newContent, "utf8");
+            printLog(
+              `Updated ${replacements} instances in ${fullPath} from ${config.oldBundle} -> ${config.newBundle}`
+            );
+            totalReplacements += replacements;
+          }
+        } catch (error) {
+          // Skip files that can't be read as text
+          printVerbose(`Skipping binary file: ${fullPath}`);
+        }
+      }
+    }
+
+    return totalReplacements;
+  }
+
+  const totalReplacements = await processDirectory(androidDir);
+  if (totalReplacements > 0) {
+    printLog(
+      `Updated ${totalReplacements} total instances across all files in Android directory`
+    );
+  } else {
+    printVerbose(
+      "No additional instances found to replace in Android directory"
+    );
+  }
+}
+
+async function updateAllFilesInProject(config: BundleConfig): Promise<void> {
+  const projectRoot = process.cwd();
+  const ig = parseGitignore(projectRoot);
+
+  // Add additional ignore patterns for project-wide search
+  ig.add([
+    "android/**",
+    "ios/**",
+    ".*/**", // Ignore all hidden directories
+    "node_modules/**",
+    "build/**",
+    "dist/**",
+    ".git/**",
+  ]);
+
+  async function processDirectory(dir: string): Promise<number> {
+    let totalReplacements = 0;
+    const entries = readdirSync(dir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+
+      // Skip files that match gitignore patterns
+      if (shouldIgnoreFile(fullPath, ig)) {
+        printVerbose(`Skipping gitignored file: ${fullPath}`);
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        totalReplacements += await processDirectory(fullPath);
+      } else {
+        // Skip binary files and other non-text files
+        if (
+          entry.name.endsWith(".class") ||
+          entry.name.endsWith(".dex") ||
+          entry.name.endsWith(".apk") ||
+          entry.name.endsWith(".aab") ||
+          entry.name.endsWith(".so") ||
+          entry.name.endsWith(".aar") ||
+          entry.name.endsWith(".png") ||
+          entry.name.endsWith(".jpg") ||
+          entry.name.endsWith(".jpeg") ||
+          entry.name.endsWith(".gif") ||
+          entry.name.endsWith(".ico") ||
+          entry.name.endsWith(".ttf") ||
+          entry.name.endsWith(".otf") ||
+          entry.name.endsWith(".woff") ||
+          entry.name.endsWith(".woff2")
+        ) {
+          continue;
+        }
+
+        try {
+          const content = readFileSync(fullPath, "utf8");
+          const { content: newContent, replacements } = replaceBundleName(
+            content,
+            config.oldBundle,
+            config.newBundle
+          );
+
+          if (replacements > 0) {
+            writeFileSync(fullPath, newContent, "utf8");
+            printLog(
+              `Updated ${replacements} instances in ${fullPath} from ${config.oldBundle} -> ${config.newBundle}`
+            );
+            totalReplacements += replacements;
+          }
+        } catch (error) {
+          // Skip files that can't be read as text
+          printVerbose(`Skipping binary file: ${fullPath}`);
+        }
+      }
+    }
+
+    return totalReplacements;
+  }
+
+  const totalReplacements = await processDirectory(projectRoot);
+  if (totalReplacements > 0) {
+    printLog(
+      `Updated ${totalReplacements} total instances across all project files`
+    );
+  } else {
+    printVerbose("No additional instances found to replace in project files");
+  }
+}
+
 export async function renameAndroidBundle(newName: string): Promise<void> {
   return await printPerf(async () => {
     const androidDir = join(process.cwd(), "android");
@@ -246,14 +426,17 @@ export async function renameAndroidBundle(newName: string): Promise<void> {
     const config = createBundleConfig(oldBundle, newName);
     printVerbose(`Renaming Android bundle from ${oldBundle} to ${newName}`);
 
-    // Update build.gradle
-    await updateBuildGradle(config);
-
-    // Update AndroidManifest.xml
-    await updateAndroidManifest(config);
+    // Update all configuration files
+    await updateFiles(config, [{ filePath: "package.json" }]);
 
     // Move and update all files in the old bundle path
     await moveAndUpdateJavaFiles(config);
+
+    // Update all remaining files in Android directory
+    await updateAllFilesInAndroid(config);
+
+    // Update all the remaining files in the project ignoring android and ios folders
+    await updateAllFilesInProject(config);
 
     printVerbose("Android bundle rename completed successfully");
   }, "Android bundle renamed");
