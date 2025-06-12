@@ -6,6 +6,7 @@ import type { CommandPlatformType } from "./types";
 import { printPerf } from "./performance";
 import { replaceInFile } from "./command-utils";
 import { renameAndroidBundle } from "./rename/android-rename";
+import { renameIosBundle } from "./rename/ios-rename";
 
 export async function renameAndroidApp(newName: string): Promise<void> {
   return await printPerf(async () => {
@@ -118,10 +119,6 @@ export async function renameApp(
   } else if (platform === "ios" || isAll) {
     await renameIosApp(newName);
   }
-}
-
-export async function renameIosBundle(newName: string): Promise<void> {
-  printVerbose(`Renaming iOS Bundle for platform: ${newName}`);
 }
 
 export async function renameBundle(
